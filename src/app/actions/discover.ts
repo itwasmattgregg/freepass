@@ -1,6 +1,12 @@
 "use server";
 
-import { getDb, studioOffersTrial, type DbClass, type DbStudio } from "@/lib/db";
+import {
+  getDb,
+  isNextBuildPhase,
+  studioOffersTrial,
+  type DbClass,
+  type DbStudio,
+} from "@/lib/db";
 
 export type Bounds = {
   south: number;
@@ -119,6 +125,8 @@ export async function getStudiosInBounds(
   bounds: Bounds,
   filters: DiscoverFilters = {}
 ): Promise<StudioWithClasses[]> {
+  if (isNextBuildPhase()) return [];
+
   try {
     const db = getDb();
     const params: unknown[] = [
@@ -162,6 +170,8 @@ export async function getStudiosInBounds(
 export async function getAllStudiosForDiscovery(
   filters: DiscoverFilters = {}
 ): Promise<StudioWithClasses[]> {
+  if (isNextBuildPhase()) return [];
+
   try {
     const db = getDb();
     const params: unknown[] = [];

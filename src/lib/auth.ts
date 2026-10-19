@@ -1,6 +1,13 @@
 import { cookies } from "next/headers";
 import { createHash, randomBytes } from "node:crypto";
-import { getDb, newId, nowIso, type DbStudio, type DbUser } from "@/lib/db";
+import {
+  getDb,
+  isNextBuildPhase,
+  newId,
+  nowIso,
+  type DbStudio,
+  type DbUser,
+} from "@/lib/db";
 import { sendMagicLinkEmail } from "@/lib/email";
 
 export type AuthUser = {
@@ -25,6 +32,8 @@ function cookieSecure() {
 }
 
 export async function getCurrentUser(): Promise<AuthUser | null> {
+  if (isNextBuildPhase()) return null;
+
   const cookieStore = await cookies();
   const raw = cookieStore.get(SESSION_COOKIE)?.value;
   if (!raw) return null;

@@ -1,6 +1,6 @@
-import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+import type Database from "better-sqlite3";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -121,8 +121,10 @@ export type DbClass = {
   updated_at: string;
 };
 
+type SqliteDatabase = Database.Database;
+
 declare global {
-  var __freepassDb: Database.Database | undefined;
+  var __freepassDb: SqliteDatabase | undefined;
 }
 
 function databasePath() {
@@ -132,13 +134,26 @@ function databasePath() {
   );
 }
 
-export function getDb(): Database.Database {
+/** Avoid loading the native addon during `next build` static workers (can SIGSEGV). */
+export function isNextBuildPhase() {
+  return process.env.NEXT_PHASE === "phase-production-build";
+}
+
+export function getDb(): SqliteDatabase {
   if (global.__freepassDb) return global.__freepassDb;
+
+  if (isNextBuildPhase()) {
+    throw new Error("SQLite is not available during the Next.js build phase");
+  }
+
+  // Lazy-require so importing this module during SSG doesn't load the native addon.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const DatabaseConstructor = require("better-sqlite3") as typeof Database;
 
   const dbPath = databasePath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-  const db = new Database(dbPath);
+  const db = new DatabaseConstructor(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
