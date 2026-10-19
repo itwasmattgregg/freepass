@@ -27,7 +27,7 @@ export default function PrivacyPage() {
         </ul>
         <h2 className="text-lg font-semibold text-stone-900">Sharing</h2>
         <p>
-          Trial signup emails are shared with the studio that received the signup. We use infrastructure providers (e.g. Supabase, email delivery) to operate the service. We do not sell personal information.
+          Trial signup emails are shared with the studio that received the signup. We use infrastructure providers (e.g. email delivery) to operate the service. We do not sell personal information.
         </p>
         <h2 className="text-lg font-semibold text-stone-900">Retention &amp; contact</h2>
         <p>

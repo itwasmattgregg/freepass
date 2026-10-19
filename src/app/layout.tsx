@@ -1,8 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { createClient } from "@/lib/supabase/server";
-import { hasSupabaseEnv } from "@/lib/supabase/env";
+import { getCurrentUser } from "@/lib/auth";
 import { signOut } from "@/app/auth/actions";
 import "leaflet/dist/leaflet.css";
 import "./globals.css";
@@ -30,11 +29,7 @@ export default async function RootLayout({
 }>) {
   let user: { email?: string | null } | null = null;
   try {
-    if (hasSupabaseEnv()) {
-      const supabase = await createClient();
-      const { data } = await supabase.auth.getUser();
-      user = data.user;
-    }
+    user = await getCurrentUser();
   } catch {
     user = null;
   }

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient, hasSupabaseEnv } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth";
 import { LoginForm } from "./LoginForm";
 
 export const dynamic = "force-dynamic";
@@ -13,22 +13,7 @@ export default async function LoginPage({
   const { next: nextParam } = await searchParams;
   const next = nextParam?.startsWith("/") ? nextParam : "/studios/new";
 
-  if (!hasSupabaseEnv()) {
-    return (
-      <main className="mx-auto max-w-md px-4 py-12">
-        <h1 className="text-2xl font-bold text-stone-900">Configuration needed</h1>
-        <p className="mt-2 text-stone-600">
-          Set Supabase env vars in <code>.env.local</code> to enable login.
-        </p>
-      </main>
-    );
-  }
-
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+  const user = await getCurrentUser();
   if (user) redirect(next);
 
   return (

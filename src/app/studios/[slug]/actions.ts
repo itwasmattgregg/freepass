@@ -1,7 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getDb, isUniqueConstraintError, newId, nowIso, studioOffersTrial, type DbStudio } from "@/lib/db";
 import { sendTrialSignupEmail } from "@/lib/email";
 import { checkRateLimit } from "@/lib/rate-limit";
 
@@ -30,25 +30,22 @@ export async function signUpForTrial(
     return { success: false, error: "Too many signup attempts. Try again later." };
   }
 
-  const admin = createAdminClient();
+  const db = getDb();
+  const studio = db
+    .prepare(
+      `SELECT id, name, slug, offers_trial, contact_email FROM studios WHERE id = ?`
+    )
+    .get(studioId) as
+    | Pick<DbStudio, "id" | "name" | "slug" | "offers_trial" | "contact_email">
+    | undefined;
 
-  const { data: studio } = await admin
-    .from("studios")
-    .select("id, name, slug, offers_trial, contact_email")
-    .eq("id", studioId)
-    .maybeSingle();
-
-  if (!studio || !studio.offers_trial) {
+  if (!studio || !studioOffersTrial(studio)) {
     return { success: false, error: "This studio is not offering free trials." };
   }
 
-  // One trial per email per studio (DB unique index is the source of truth)
-  const { data: existing } = await admin
-    .from("trial_signups")
-    .select("id")
-    .eq("studio_id", studioId)
-    .eq("email", normalized)
-    .maybeSingle();
+  const existing = db
+    .prepare(`SELECT id FROM trial_signups WHERE studio_id = ? AND email = ?`)
+    .get(studioId, normalized);
 
   if (existing) {
     return {
@@ -57,13 +54,12 @@ export async function signUpForTrial(
     };
   }
 
-  const { error } = await admin.from("trial_signups").insert({
-    studio_id: studioId,
-    email: normalized,
-  });
-
-  if (error) {
-    if (error.code === "23505") {
+  try {
+    db.prepare(
+      `INSERT INTO trial_signups (id, studio_id, email, signed_up_at) VALUES (?, ?, ?, ?)`
+    ).run(newId(), studioId, normalized, nowIso());
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
       return {
         success: false,
         error: "This email has already been used for a free trial at this studio.",

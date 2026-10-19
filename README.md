@@ -1,6 +1,6 @@
 # FreePass
 
-A **free** platform for studios and class discovery. Find classes nearby on a map, search and filter by type and schedule, and sign up for free trials. Built for studios—no fees. Built with Next.js and Supabase.
+A **free** platform for studios and class discovery. Find classes nearby on a map, search and filter by type and schedule, and sign up for free trials. Built for studios—no fees. Built with Next.js and SQLite.
 
 ## Features
 
@@ -15,15 +15,7 @@ A **free** platform for studios and class discovery. Find classes nearby on a ma
 
 ## Setup
 
-### 1. Supabase project
-
-1. Create a project at [supabase.com](https://supabase.com).
-2. Run `supabase/schema.sql` in the SQL Editor (fresh installs), **or** apply migrations in order under `supabase/migrations/` if upgrading.
-3. In **Authentication → URL configuration**, add redirect URLs:
-   - `http://localhost:3000/auth/callback`
-   - `https://your-domain.com/auth/callback`
-
-### 2. Environment variables
+### 1. Environment variables
 
 ```bash
 cp .env.local.example .env.local
@@ -31,14 +23,16 @@ cp .env.local.example .env.local
 
 | Variable | Purpose |
 | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | Project URL |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Publishable key (`sb_publishable_…`); legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` also works |
-| `SUPABASE_SECRET_KEY` | Server-only secret (`sb_secret_…`); legacy `SUPABASE_SERVICE_ROLE_KEY` also works |
 | `NEXT_PUBLIC_APP_URL` | Site origin for auth redirects and emails |
-| `RESEND_API_KEY` | Optional; enables trial signup emails |
+| `DATABASE_PATH` | Optional path to the SQLite file (defaults to `./data/freepass.db`) |
+| `RESEND_API_KEY` | Optional; enables magic-link + trial signup emails |
 | `EMAIL_FROM` | Optional From address for Resend |
 
-### 3. Run the app
+Without `RESEND_API_KEY`, magic-link URLs are printed to the server console so local login still works.
+
+The SQLite schema is created automatically on first boot. See `db/schema.sql` for a readable reference.
+
+### 2. Run the app
 
 Requires **Node.js 20+**.
 
@@ -59,17 +53,19 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Tech stack
 
 - **Next.js** (App Router), **TypeScript**, **Tailwind CSS**
-- **Supabase** — Postgres, Auth, RLS (public read; mutations via service role after auth checks)
+- **SQLite** (`better-sqlite3`) — local file database for studios, auth sessions, and rate limits
 - **Leaflet** + **OpenStreetMap** / Nominatim — Map + geocoding
-- **Resend** — Optional transactional email
+- **Resend** — Optional transactional email (magic links + trial notices)
 
 ## Security model
 
-- `management_key` is not readable by anon/authenticated clients.
-- Studio/class writes go through server actions using the **service role**, after verifying the signed-in owner.
-- Trial inserts are rate-limited and unique on `(studio_id, lower(email))`.
+- `management_key` is only used server-side for legacy claim links.
+- Studio/class writes go through server actions after verifying the signed-in owner session.
+- Trial inserts are rate-limited and unique on `(studio_id, email)`.
+- Session cookies are httpOnly; magic-link and session tokens are stored hashed.
 
 ## Roadmap
 
 - Class registration and payments to the studio through the app, with no platform fee for studios.
 - Richer owner dashboard (multi-studio list, trial inbox UI).
+- Dedicated hosted database when traffic warrants it.

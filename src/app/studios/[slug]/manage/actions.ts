@@ -1,7 +1,7 @@
 "use server";
 
-import { createAdminClient } from "@/lib/supabase/admin";
 import { getOwnedStudio, requireUser } from "@/lib/auth";
+import { getDb, newId, nowIso, type DbStudio } from "@/lib/db";
 import { distanceMeters, normalizeAddress } from "@/lib/address";
 import { geocodeAddress } from "@/lib/geocode";
 import { findDuplicateStudios } from "@/app/studios/new/actions";
@@ -27,19 +27,29 @@ export async function addClass(
   const { error, studio } = await assertOwner(slug);
   if (error || !studio) return { success: false, error: error ?? "Unauthorized" };
 
-  const admin = createAdminClient();
-  const { error: insertError } = await admin.from("classes").insert({
-    studio_id: studio.id,
-    name: body.name.trim(),
-    category: body.category || null,
-    day_of_week: body.day_of_week,
-    start_time: body.start_time,
-    end_time: body.end_time,
-  });
-
-  return insertError
-    ? { success: false, error: "Could not add class." }
-    : { success: true };
+  try {
+    const timestamp = nowIso();
+    getDb()
+      .prepare(
+        `INSERT INTO classes (
+          id, studio_id, name, category, day_of_week, start_time, end_time, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        newId(),
+        studio.id,
+        body.name.trim(),
+        body.category || null,
+        body.day_of_week,
+        body.start_time,
+        body.end_time,
+        timestamp,
+        timestamp
+      );
+    return { success: true };
+  } catch {
+    return { success: false, error: "Could not add class." };
+  }
 }
 
 export async function deleteClass(
@@ -49,16 +59,13 @@ export async function deleteClass(
   const { error, studio } = await assertOwner(slug);
   if (error || !studio) return { success: false, error: error ?? "Unauthorized" };
 
-  const admin = createAdminClient();
-  const { error: delError } = await admin
-    .from("classes")
-    .delete()
-    .eq("id", classId)
-    .eq("studio_id", studio.id);
+  const result = getDb()
+    .prepare(`DELETE FROM classes WHERE id = ? AND studio_id = ?`)
+    .run(classId, studio.id);
 
-  return delError
-    ? { success: false, error: "Could not delete class." }
-    : { success: true };
+  return result.changes > 0
+    ? { success: true }
+    : { success: false, error: "Could not delete class." };
 }
 
 export async function updateStudioProfile(
@@ -113,17 +120,17 @@ export async function updateStudioProfile(
     }
   }
 
-  // Soft check: if coords exist and another studio is extremely close with same name-ish
   if (latitude != null && longitude != null && !body.force_update) {
-    const admin = createAdminClient();
-    const { data: nearby } = await admin
-      .from("studios")
-      .select("id, name, slug, latitude, longitude")
-      .neq("id", studio.id)
-      .not("latitude", "is", null)
-      .limit(50);
+    const nearby = getDb()
+      .prepare(
+        `SELECT id, name, slug, latitude, longitude
+         FROM studios
+         WHERE id != ? AND latitude IS NOT NULL
+         LIMIT 50`
+      )
+      .all(studio.id) as Pick<DbStudio, "id" | "name" | "slug" | "latitude" | "longitude">[];
 
-    const clash = (nearby ?? []).find((s) => {
+    const clash = nearby.find((s) => {
       if (s.latitude == null || s.longitude == null) return false;
       return (
         distanceMeters(latitude!, longitude!, Number(s.latitude), Number(s.longitude)) <= 80 &&
@@ -139,24 +146,30 @@ export async function updateStudioProfile(
     }
   }
 
-  const admin = createAdminClient();
-  const { error: updateError } = await admin
-    .from("studios")
-    .update({
-      name,
-      description: body.description,
-      address,
-      address_normalized: normalizeAddress(address),
-      latitude,
-      longitude,
-      contact_email: contactEmail,
-      offers_trial: body.offers_trial,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", studio.id);
-
-  if (updateError) return { success: false, error: "Could not update studio." };
-  return { success: true, slug: studio.slug };
+  try {
+    getDb()
+      .prepare(
+        `UPDATE studios
+         SET name = ?, description = ?, address = ?, address_normalized = ?,
+             latitude = ?, longitude = ?, contact_email = ?, offers_trial = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        name,
+        body.description,
+        address,
+        normalizeAddress(address),
+        latitude,
+        longitude,
+        contactEmail,
+        body.offers_trial ? 1 : 0,
+        nowIso(),
+        studio.id
+      );
+    return { success: true, slug: studio.slug };
+  } catch {
+    return { success: false, error: "Could not update studio." };
+  }
 }
 
 /** One-time claim for legacy studios that still have a management key bookmark. */
@@ -167,27 +180,26 @@ export async function claimStudioWithKey(
   const user = await requireUser();
   if (!user) return { success: false, error: "Sign in to claim this studio." };
 
-  const admin = createAdminClient();
-  const { data: studio } = await admin
-    .from("studios")
-    .select("id, owner_id, management_key")
-    .eq("slug", slug)
-    .eq("management_key", managementKey)
-    .maybeSingle();
+  const db = getDb();
+  const studio = db
+    .prepare(
+      `SELECT id, owner_id, management_key FROM studios WHERE slug = ? AND management_key = ?`
+    )
+    .get(slug, managementKey) as
+    | Pick<DbStudio, "id" | "owner_id" | "management_key">
+    | undefined;
 
   if (!studio) return { success: false, error: "Invalid claim link." };
   if (studio.owner_id && studio.owner_id !== user.id) {
     return { success: false, error: "This studio already has an owner." };
   }
 
-  const { error } = await admin
-    .from("studios")
-    .update({
-      owner_id: user.id,
-      contact_email: user.email,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", studio.id);
-
-  return error ? { success: false, error: "Could not claim studio." } : { success: true };
+  try {
+    db.prepare(
+      `UPDATE studios SET owner_id = ?, contact_email = ?, updated_at = ? WHERE id = ?`
+    ).run(user.id, user.email, nowIso(), studio.id);
+    return { success: true };
+  } catch {
+    return { success: false, error: "Could not claim studio." };
+  }
 }
