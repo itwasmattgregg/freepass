@@ -2,12 +2,8 @@
 
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { createClient } from "@/lib/supabase/server";
+import { destroySession, requestMagicLinkForEmail } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
-
-function appOrigin(): string {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-}
 
 export async function requestMagicLink(
   _prev: { error?: string; sent?: boolean } | null,
@@ -27,15 +23,9 @@ export async function requestMagicLink(
     return { error: "Too many login attempts. Try again in a few minutes." };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: {
-      emailRedirectTo: `${appOrigin()}/auth/callback?next=${encodeURIComponent(next)}`,
-    },
-  });
-
-  if (error) {
+  try {
+    await requestMagicLinkForEmail(email, next.startsWith("/") ? next : "/studios/new");
+  } catch (error) {
     console.error("magic_link_failed", error);
     return { error: "Could not send login link. Please try again." };
   }
@@ -44,7 +34,6 @@ export async function requestMagicLink(
 }
 
 export async function signOut() {
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  await destroySession();
   redirect("/");
 }

@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getCurrentUser } from "@/lib/auth";
+import { getDb, studioOffersTrial, type DbClass, type DbStudio } from "@/lib/db";
 import { claimStudioWithKey } from "./actions";
 import { ManageStudioPanel } from "./ManageSchedule";
 
-export const revalidate = 0;
+export const dynamic = "force-dynamic";
 
 export default async function ManageStudioPage({
   params,
@@ -17,10 +17,7 @@ export default async function ManageStudioPage({
   const { slug } = await params;
   const { key: managementKey, new: isNew } = await searchParams;
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
 
   if (!user) {
     const next = managementKey
@@ -29,7 +26,6 @@ export default async function ManageStudioPage({
     redirect(`/auth/login?next=${encodeURIComponent(next)}`);
   }
 
-  // Legacy bookmark claim path
   if (managementKey) {
     const claimed = await claimStudioWithKey(slug, managementKey);
     if (!claimed.success) {
@@ -46,24 +42,40 @@ export default async function ManageStudioPage({
     redirect(`/studios/${slug}/manage?new=${isNew === "1" ? "1" : "0"}`);
   }
 
-  const admin = createAdminClient();
-  const { data: studio } = await admin
-    .from("studios")
-    .select("id, name, slug, description, address, contact_email, offers_trial, owner_id")
-    .eq("slug", slug)
-    .eq("owner_id", user.id)
-    .maybeSingle();
+  const db = getDb();
+  const studio = db
+    .prepare(
+      `SELECT id, name, slug, description, address, contact_email, offers_trial, owner_id
+       FROM studios
+       WHERE slug = ? AND owner_id = ?`
+    )
+    .get(slug, user.id) as
+    | Pick<
+        DbStudio,
+        | "id"
+        | "name"
+        | "slug"
+        | "description"
+        | "address"
+        | "contact_email"
+        | "offers_trial"
+        | "owner_id"
+      >
+    | undefined;
 
   if (!studio) notFound();
 
-  const { data: classRows } = await admin
-    .from("classes")
-    .select("id, name, category, day_of_week, start_time, end_time")
-    .eq("studio_id", studio.id)
-    .order("day_of_week")
-    .order("start_time");
-
-  const classes = classRows ?? [];
+  const classes = db
+    .prepare(
+      `SELECT id, name, category, day_of_week, start_time, end_time
+       FROM classes
+       WHERE studio_id = ?
+       ORDER BY day_of_week, start_time`
+    )
+    .all(studio.id) as Pick<
+    DbClass,
+    "id" | "name" | "category" | "day_of_week" | "start_time" | "end_time"
+  >[];
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-12">
@@ -85,7 +97,7 @@ export default async function ManageStudioPage({
             description: studio.description,
             address: studio.address,
             contact_email: studio.contact_email,
-            offers_trial: studio.offers_trial,
+            offers_trial: studioOffersTrial(studio),
           }}
           classes={classes}
           isNew={isNew === "1"}

@@ -1,36 +1,40 @@
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getDb, newId, nowIso } from "@/lib/db";
 
-/** Sliding-window rate limit backed by Postgres. Returns false when over limit. */
+/** Sliding-window rate limit backed by SQLite. Returns false when over limit. */
 export async function checkRateLimit(
   bucket: string,
   identifier: string,
   limit: number,
   windowSeconds: number
 ): Promise<boolean> {
-  const admin = createAdminClient();
-  const since = new Date(Date.now() - windowSeconds * 1000).toISOString();
+  try {
+    const db = getDb();
+    const since = new Date(Date.now() - windowSeconds * 1000).toISOString();
 
-  const { count, error } = await admin
-    .from("rate_limits")
-    .select("id", { count: "exact", head: true })
-    .eq("bucket", bucket)
-    .eq("identifier", identifier)
-    .gte("created_at", since);
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM rate_limits
+         WHERE bucket = ? AND identifier = ? AND created_at >= ?`
+      )
+      .get(bucket, identifier, since) as { count: number };
 
-  if (error) {
+    if (row.count >= limit) return false;
+
+    db.prepare(
+      `INSERT INTO rate_limits (id, bucket, identifier, created_at) VALUES (?, ?, ?, ?)`
+    ).run(newId(), bucket, identifier, nowIso());
+
+    return true;
+  } catch (error) {
     console.error("rate_limit_check_failed", error);
     return true; // fail open so legitimate users aren't blocked by infra blips
   }
-
-  if ((count ?? 0) >= limit) return false;
-
-  await admin.from("rate_limits").insert({ bucket, identifier });
-  return true;
 }
 
 /** Best-effort cleanup of old rate-limit rows. */
 export async function pruneRateLimits(olderThanHours = 24) {
-  const admin = createAdminClient();
+  const db = getDb();
   const cutoff = new Date(Date.now() - olderThanHours * 60 * 60 * 1000).toISOString();
-  await admin.from("rate_limits").delete().lt("created_at", cutoff);
+  db.prepare(`DELETE FROM rate_limits WHERE created_at < ?`).run(cutoff);
 }

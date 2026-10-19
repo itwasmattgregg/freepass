@@ -1,8 +1,8 @@
 "use server";
 
 import { headers } from "next/headers";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { requireUser } from "@/lib/auth";
+import { getDb, isUniqueConstraintError, newId, nowIso, type DbStudio } from "@/lib/db";
 import { distanceMeters, normalizeAddress, slugify } from "@/lib/address";
 import { geocodeAddress } from "@/lib/geocode";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -62,18 +62,21 @@ export async function findDuplicateStudios(input: {
   longitude?: number | null;
   excludeStudioId?: string;
 }): Promise<DuplicateStudio[]> {
-  const admin = createAdminClient();
+  const db = getDb();
   const normalized = normalizeAddress(input.address);
   const found = new Map<string, DuplicateStudio>();
 
   if (normalized) {
-    const { data } = await admin
-      .from("studios")
-      .select("id, name, slug, address")
-      .eq("address_normalized", normalized)
-      .limit(5);
+    const rows = db
+      .prepare(
+        `SELECT id, name, slug, address
+         FROM studios
+         WHERE address_normalized = ?
+         LIMIT 5`
+      )
+      .all(normalized) as Pick<DbStudio, "id" | "name" | "slug" | "address">[];
 
-    for (const s of data ?? []) {
+    for (const s of rows) {
       if (input.excludeStudioId && s.id === input.excludeStudioId) continue;
       found.set(s.id, { ...s, reason: "address" });
     }
@@ -85,20 +88,28 @@ export async function findDuplicateStudios(input: {
     Number.isFinite(input.latitude) &&
     Number.isFinite(input.longitude)
   ) {
-    // Bounding box ~150m, then precise Haversine filter
     const delta = 0.002;
-    const { data } = await admin
-      .from("studios")
-      .select("id, name, slug, address, latitude, longitude")
-      .not("latitude", "is", null)
-      .not("longitude", "is", null)
-      .gte("latitude", input.latitude - delta)
-      .lte("latitude", input.latitude + delta)
-      .gte("longitude", input.longitude - delta)
-      .lte("longitude", input.longitude + delta)
-      .limit(20);
+    const rows = db
+      .prepare(
+        `SELECT id, name, slug, address, latitude, longitude
+         FROM studios
+         WHERE latitude IS NOT NULL
+           AND longitude IS NOT NULL
+           AND latitude >= ? AND latitude <= ?
+           AND longitude >= ? AND longitude <= ?
+         LIMIT 20`
+      )
+      .all(
+        input.latitude - delta,
+        input.latitude + delta,
+        input.longitude - delta,
+        input.longitude + delta
+      ) as Pick<
+      DbStudio,
+      "id" | "name" | "slug" | "address" | "latitude" | "longitude"
+    >[];
 
-    for (const s of data ?? []) {
+    for (const s of rows) {
       if (input.excludeStudioId && s.id === input.excludeStudioId) continue;
       if (s.latitude == null || s.longitude == null) continue;
       const meters = distanceMeters(
@@ -161,7 +172,6 @@ export async function createStudio(formData: FormData): Promise<CreateStudioResu
     return { success: false, error: "Enter a valid contact email.", field: "contact_email" };
   }
 
-  // Geocode if coords missing
   if (latitude == null || longitude == null || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     const geo = await geocodeAddress(address);
     if (!geo) {
@@ -191,35 +201,43 @@ export async function createStudio(formData: FormData): Promise<CreateStudioResu
     };
   }
 
-  const admin = createAdminClient();
+  const db = getDb();
   let slug = slugify(name) || "studio";
-  const { data: existing } = await admin.from("studios").select("id").eq("slug", slug).maybeSingle();
+  const existing = db.prepare(`SELECT id FROM studios WHERE slug = ?`).get(slug);
   if (existing) slug = `${slug}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const { data: studio, error } = await admin
-    .from("studios")
-    .insert({
+  try {
+    const id = newId();
+    const timestamp = nowIso();
+    db.prepare(
+      `INSERT INTO studios (
+        id, name, slug, description, address, address_normalized,
+        latitude, longitude, offers_trial, management_key, owner_id, contact_email,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
       name,
       slug,
       description,
       address,
-      address_normalized: normalizeAddress(address),
+      normalizeAddress(address),
       latitude,
       longitude,
-      offers_trial: offersTrial,
-      owner_id: user.id,
-      contact_email: contactEmail,
-    })
-    .select("slug")
-    .single();
+      offersTrial ? 1 : 0,
+      newId(),
+      user.id,
+      contactEmail,
+      timestamp,
+      timestamp
+    );
 
-  if (error) {
+    return { success: true, slug };
+  } catch (error) {
     console.error("create_studio_failed", error);
-    if (error.code === "23505") {
+    if (isUniqueConstraintError(error)) {
       return { success: false, error: "A studio with a similar name already exists.", field: "name" };
     }
     return { success: false, error: "Could not create studio. Please try again." };
   }
-
-  return { success: true, slug: studio.slug };
 }

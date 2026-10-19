@@ -1,6 +1,12 @@
 "use server";
 
-import { createClient, hasSupabaseEnv } from "@/lib/supabase/server";
+import {
+  getDb,
+  isNextBuildPhase,
+  studioOffersTrial,
+  type DbClass,
+  type DbStudio,
+} from "@/lib/db";
 
 export type Bounds = {
   south: number;
@@ -35,24 +41,22 @@ export type StudioWithClasses = {
   }[];
 };
 
-const STUDIO_SELECT = `
-  id,
-  name,
-  slug,
-  description,
-  address,
-  latitude,
-  longitude,
-  offers_trial,
-  classes (
-    id,
-    name,
-    category,
-    day_of_week,
-    start_time,
-    end_time
-  )
-`;
+type StudioRow = Pick<
+  DbStudio,
+  | "id"
+  | "name"
+  | "slug"
+  | "description"
+  | "address"
+  | "latitude"
+  | "longitude"
+  | "offers_trial"
+>;
+
+type ClassRow = Pick<
+  DbClass,
+  "id" | "studio_id" | "name" | "category" | "day_of_week" | "start_time" | "end_time"
+>;
 
 function applyClientFilters(
   studios: StudioWithClasses[],
@@ -76,43 +80,87 @@ function applyClientFilters(
   return result;
 }
 
+function attachClasses(studios: StudioRow[]): StudioWithClasses[] {
+  if (studios.length === 0) return [];
+
+  const db = getDb();
+  const placeholders = studios.map(() => "?").join(", ");
+  const classes = db
+    .prepare(
+      `SELECT id, studio_id, name, category, day_of_week, start_time, end_time
+       FROM classes
+       WHERE studio_id IN (${placeholders})
+       ORDER BY day_of_week, start_time`
+    )
+    .all(...studios.map((s) => s.id)) as ClassRow[];
+
+  const byStudio = new Map<string, ClassRow[]>();
+  for (const c of classes) {
+    const list = byStudio.get(c.studio_id) ?? [];
+    list.push(c);
+    byStudio.set(c.studio_id, list);
+  }
+
+  return studios.map((s) => ({
+    id: s.id,
+    name: s.name,
+    slug: s.slug,
+    description: s.description,
+    address: s.address,
+    latitude: s.latitude,
+    longitude: s.longitude,
+    offers_trial: studioOffersTrial(s),
+    classes: (byStudio.get(s.id) ?? []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      category: c.category,
+      day_of_week: c.day_of_week,
+      start_time: c.start_time,
+      end_time: c.end_time,
+    })),
+  }));
+}
+
 export async function getStudiosInBounds(
   bounds: Bounds,
   filters: DiscoverFilters = {}
 ): Promise<StudioWithClasses[]> {
-  if (!hasSupabaseEnv()) return [];
+  if (isNextBuildPhase()) return [];
 
   try {
-    const supabase = await createClient();
-
-    let query = supabase
-      .from("studios")
-      .select(STUDIO_SELECT)
-      .not("latitude", "is", null)
-      .not("longitude", "is", null)
-      .gte("latitude", bounds.south)
-      .lte("latitude", bounds.north)
-      .gte("longitude", bounds.west)
-      .lte("longitude", bounds.east);
+    const db = getDb();
+    const params: unknown[] = [
+      bounds.south,
+      bounds.north,
+      bounds.west,
+      bounds.east,
+    ];
+    let sql = `
+      SELECT id, name, slug, description, address, latitude, longitude, offers_trial
+      FROM studios
+      WHERE latitude IS NOT NULL
+        AND longitude IS NOT NULL
+        AND latitude >= ? AND latitude <= ?
+        AND longitude >= ? AND longitude <= ?
+    `;
 
     if (filters.trialOnly) {
-      query = query.eq("offers_trial", true);
+      sql += ` AND offers_trial = 1`;
     }
 
     if (filters.query?.trim()) {
-      const q = filters.query.trim().toLowerCase();
-      query = query.or(
-        `name.ilike.%${q}%,description.ilike.%${q}%,address.ilike.%${q}%`
-      );
+      const q = `%${filters.query.trim().toLowerCase()}%`;
+      sql += ` AND (
+        lower(name) LIKE ?
+        OR lower(coalesce(description, '')) LIKE ?
+        OR lower(coalesce(address, '')) LIKE ?
+      )`;
+      params.push(q, q, q);
     }
 
-    const { data: studios, error } = await query.order("name");
-    if (error) {
-      console.error("discover_bounds_failed", error);
-      return [];
-    }
-
-    return applyClientFilters((studios ?? []) as StudioWithClasses[], filters);
+    sql += ` ORDER BY name`;
+    const studios = db.prepare(sql).all(...params) as StudioRow[];
+    return applyClientFilters(attachClasses(studios), filters);
   } catch (e) {
     console.error("discover_bounds_failed", e);
     return [];
@@ -122,31 +170,34 @@ export async function getStudiosInBounds(
 export async function getAllStudiosForDiscovery(
   filters: DiscoverFilters = {}
 ): Promise<StudioWithClasses[]> {
-  if (!hasSupabaseEnv()) return [];
+  if (isNextBuildPhase()) return [];
 
   try {
-    const supabase = await createClient();
-
-    let query = supabase.from("studios").select(STUDIO_SELECT).order("name");
+    const db = getDb();
+    const params: unknown[] = [];
+    let sql = `
+      SELECT id, name, slug, description, address, latitude, longitude, offers_trial
+      FROM studios
+      WHERE 1 = 1
+    `;
 
     if (filters.trialOnly) {
-      query = query.eq("offers_trial", true);
+      sql += ` AND offers_trial = 1`;
     }
 
     if (filters.query?.trim()) {
-      const q = filters.query.trim().toLowerCase();
-      query = query.or(
-        `name.ilike.%${q}%,description.ilike.%${q}%,address.ilike.%${q}%`
-      );
+      const q = `%${filters.query.trim().toLowerCase()}%`;
+      sql += ` AND (
+        lower(name) LIKE ?
+        OR lower(coalesce(description, '')) LIKE ?
+        OR lower(coalesce(address, '')) LIKE ?
+      )`;
+      params.push(q, q, q);
     }
 
-    const { data: studios, error } = await query;
-    if (error) {
-      console.error("discover_all_failed", error);
-      return [];
-    }
-
-    return applyClientFilters((studios ?? []) as StudioWithClasses[], filters);
+    sql += ` ORDER BY name`;
+    const studios = db.prepare(sql).all(...params) as StudioRow[];
+    return applyClientFilters(attachClasses(studios), filters);
   } catch (e) {
     console.error("discover_all_failed", e);
     return [];

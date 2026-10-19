@@ -1,8 +1,6 @@
 import { getAllStudiosForDiscovery } from "@/app/actions/discover";
 import { DiscoveryView } from "@/components/discovery/DiscoveryView";
 
-export const revalidate = 60;
-
 export default async function HomePage() {
   const initialStudios = await getAllStudiosForDiscovery({});
   return (

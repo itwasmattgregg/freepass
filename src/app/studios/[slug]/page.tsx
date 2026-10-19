@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth";
+import { getDb, studioOffersTrial, type DbClass, type DbStudio } from "@/lib/db";
 import { DAY_NAMES } from "@/types/database";
 import { TrialSignupForm } from "./TrialSignupForm";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 function formatTime(t: string) {
   return new Date(`1970-01-01T${t}`).toLocaleTimeString("en-US", {
@@ -20,31 +21,44 @@ export default async function StudioPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const supabase = await createClient();
+  const db = getDb();
 
-  const { data: studio, error: studioError } = await supabase
-    .from("studios")
-    .select(
-      "id, name, slug, description, address, latitude, longitude, offers_trial, owner_id"
+  const studio = db
+    .prepare(
+      `SELECT id, name, slug, description, address, latitude, longitude, offers_trial, owner_id
+       FROM studios WHERE slug = ?`
     )
-    .eq("slug", slug)
-    .single();
+    .get(slug) as
+    | Pick<
+        DbStudio,
+        | "id"
+        | "name"
+        | "slug"
+        | "description"
+        | "address"
+        | "latitude"
+        | "longitude"
+        | "offers_trial"
+        | "owner_id"
+      >
+    | undefined;
 
-  if (studioError || !studio) notFound();
+  if (!studio) notFound();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getCurrentUser();
   const isOwner = !!(user && studio.owner_id && user.id === studio.owner_id);
 
-  const { data: classRows } = await supabase
-    .from("classes")
-    .select("id, name, category, day_of_week, start_time, end_time")
-    .eq("studio_id", studio.id)
-    .order("day_of_week")
-    .order("start_time");
-
-  const classes = classRows ?? [];
+  const classes = db
+    .prepare(
+      `SELECT id, name, category, day_of_week, start_time, end_time
+       FROM classes
+       WHERE studio_id = ?
+       ORDER BY day_of_week, start_time`
+    )
+    .all(studio.id) as Pick<
+    DbClass,
+    "id" | "name" | "category" | "day_of_week" | "start_time" | "end_time"
+  >[];
 
   const scheduleByDay = classes.reduce<Record<number, typeof classes>>((acc, c) => {
     if (!acc[c.day_of_week]) acc[c.day_of_week] = [];
@@ -128,7 +142,7 @@ export default async function StudioPage({
         )}
       </section>
 
-      {studio.offers_trial && (
+      {studioOffersTrial(studio) && (
         <section className="rounded-xl border border-stone-200 bg-stone-50 p-6">
           <h2 className="mb-2 text-xl font-semibold text-stone-900">Free trial class</h2>
           <p className="mb-4 text-sm text-stone-600">
